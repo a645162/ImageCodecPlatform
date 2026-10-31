@@ -1,6 +1,7 @@
 // vpl_jpeg_encoder.cpp - oneVPL 硬件 JPEG 编码器实现（系统内存，无 D3D11 依赖）。
 #include "vpl_jpeg_encoder.h"
 
+#include <algorithm>
 #include <cstring>
 
 #include "rgb_nv12.h"
@@ -64,20 +65,26 @@ bool VplJpegEncoder::apply_params(uint32_t w, uint32_t h, uint32_t quality) {
     last_error = "尺寸不能为 0";
     return false;
   }
-  // 硬件 JPEG 输出 NV12，色度按 2x2 子采样，因此高度必须是偶数
-  // （宽度奇数没有问题：JPEG 的最后一个 MCU 列内部补边，SOF 里仍写真实宽度）。
-  if ((h & 1u) != 0) {
-    last_error = "硬件 JPEG 要求高度为偶数（NV12 色度按 2x2 子采样）";
-    return false;
-  }
 
   std::memset(&param, 0, sizeof(param));
   param.mfx.CodecId = MFX_CODEC_JPEG;
   param.mfx.CodecProfile = MFX_PROFILE_JPEG_BASELINE;
   param.mfx.FrameInfo.FourCC = MFX_FOURCC_NV12;
   param.mfx.FrameInfo.ChromaFormat = MFX_CHROMAFORMAT_YUV420;
-  param.mfx.FrameInfo.Width = clamp_u16(w);
-  param.mfx.FrameInfo.Height = clamp_u16(h);
+  // 尺寸不要求偶数：NV12 只是**表面**宽高必须是偶数（2x2 色度子采样），
+  // 所以 Width/Height 向上取偶、CropW/CropH 保留真实宽高。运行库按
+  // CropW/CropH 写 SOF，于是 TIFF 的末条 strip（可能是奇数行/奇数宽）
+  // 也能得到真实尺寸的 JPEG，不会出现「SOF 比 strip 大」这种 libtiff
+  // 会拒绝解码的形态（宽度方向上 libtiff 是硬错误，不是警告）。
+  //
+  // 表面高度还有下限：Intel 的 JPEG 编码器按 16 行 MCU 工作，Height < 16
+  // 时 Init 直接返回 MFX_ERR_INVALID_VIDEO_PARAM（实测 257x8 失败、
+  // 257x16 成功）。补到 16 行不影响码流——JPEG 的 MCU 填充本来就按
+  // 16 行对齐，SOF 仍写真实的 CropH。
+  const uint32_t surface_w = (w + 1u) & ~1u;
+  const uint32_t surface_h = std::max<uint32_t>(16u, (h + 1u) & ~1u);
+  param.mfx.FrameInfo.Width = clamp_u16(surface_w);
+  param.mfx.FrameInfo.Height = clamp_u16(surface_h);
   param.mfx.FrameInfo.CropX = 0;
   param.mfx.FrameInfo.CropY = 0;
   param.mfx.FrameInfo.CropW = clamp_u16(w);
@@ -159,6 +166,30 @@ bool VplJpegEncoder::encode(const uint8_t *nv12, size_t nv12_bytes,
     return false;
   }
 
+  auto release_surface = [surface]() {
+    if (surface->FrameInterface != nullptr) {
+      surface->FrameInterface->Release(surface);
+    }
+  };
+
+  // 系统内存 surface 在 Map 之前 Data.Y/UV 是空的（dispatcher 没有
+  // MFXMemory_MapFrame，只能用 FrameInterface->Map）。写完后必须 Unmap：
+  // 编码器要求输入 surface 的 Data.Locked == 0，没解映射会返回
+  // MFX_ERR_LOCK_MEMORY，看起来却像「尺寸不足」。
+  if (surface->FrameInterface == nullptr ||
+      surface->FrameInterface->Map == nullptr ||
+      surface->FrameInterface->Unmap == nullptr) {
+    last_error = "运行库返回的 surface 没有 Map/Unmap 接口";
+    release_surface();
+    return false;
+  }
+  sts = surface->FrameInterface->Map(surface, MFX_MAP_WRITE);
+  if (sts != MFX_ERR_NONE) {
+    last_error = std::string("surface Map 失败：") + vpl_status_str(sts);
+    release_surface();
+    return false;
+  }
+
   // 内部 surface 可能是对齐后的尺寸，按 pitch 逐行拷贝；padding 区填
   // Y=0 / UV=128，保证编码器读到的不是未初始化内存。
   const mfxU16 pitch = surface->Data.Pitch;
@@ -166,9 +197,8 @@ bool VplJpegEncoder::encode(const uint8_t *nv12, size_t nv12_bytes,
   if (surface->Data.Y == nullptr || surface->Data.UV == nullptr ||
       pitch < width || surface_rows < height) {
     last_error = "运行库返回的系统内存 surface 尺寸不足";
-    if (surface->FrameInterface != nullptr) {
-      surface->FrameInterface->Release(surface);
-    }
+    surface->FrameInterface->Unmap(surface);
+    release_surface();
     return false;
   }
   for (mfxU32 row = 0; row < surface_rows; ++row) {
@@ -188,10 +218,16 @@ bool VplJpegEncoder::encode(const uint8_t *nv12, size_t nv12_bytes,
                 src_uv + static_cast<size_t>(src_row) * width, width);
   }
 
-  const bool ok = encode_surface(surface, jpeg);
-  if (surface->FrameInterface != nullptr) {
-    surface->FrameInterface->Release(surface);
+  const mfxStatus unmap_sts = surface->FrameInterface->Unmap(surface);
+  if (unmap_sts != MFX_ERR_NONE) {
+    last_error =
+        std::string("surface Unmap 失败：") + vpl_status_str(unmap_sts);
+    release_surface();
+    return false;
   }
+
+  const bool ok = encode_surface(surface, jpeg);
+  release_surface();
   return ok;
 }
 

@@ -465,8 +465,11 @@ bool selftest_hardware_tiff(const VplProbeResult &probe) {
     std::printf("[HW] TIFF 跳过：缺少 libtiff（无法校验）\n");
     return true;
   }
-  const uint32_t width = 320;
-  const uint32_t height = 240;
+  // 故意用奇数宽高 + 32 行 strip（末条只有 1 行）：这是最容易踩硬件下限的
+  // 组合——NV12 表面要求偶数宽高，Intel JPEG 编码器还要求表面至少 16 行。
+  // 编码器把表面补齐、CropH 保留真实高度，SOF 才能与 TIFF 的 strip 尺寸对上。
+  const uint32_t width = 257;
+  const uint32_t height = 193;
   const uint32_t rows = 32;
   const std::vector<uint8_t> rgb =
       oic::selftest::make_test_image(width, height);

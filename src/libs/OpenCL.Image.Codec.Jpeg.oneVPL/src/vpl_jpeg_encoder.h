@@ -33,13 +33,17 @@ struct VplJpegEncoder {
   VplJpegEncoder &operator=(const VplJpegEncoder &) = delete;
   ~VplJpegEncoder() { close(); }
 
-  // 建立会话并初始化编码器。width/height 必须为非零偶数；quality 0..100。
+  // 建立会话并初始化编码器。quality 0..100。
+  // width/height 是**真实**尺寸，可以奇数：内部把 NV12 表面宽高向上取偶、
+  // 高度至少补到 16 行（Intel JPEG 编码器的最小 MCU 块），CropW/CropH 与
+  // SOF 仍是真实尺寸，因此 TIFF 的奇数尺寸/短末条 strip 也能正确往返。
   bool init(uint32_t w, uint32_t h, uint32_t quality);
   // 按指定硬件单元初始化（多显卡机器上选核显时使用）。
   bool init_on_unit(const VplUnitInfo &unit, uint32_t w, uint32_t h,
                     uint32_t quality);
 
-  // 编码一帧 NV12（w*h*3/2 字节，Y 平面后接交错 UV，pitch=width）-> JPEG 码流。
+  // 编码一帧 NV12（w*h + w*ceil(h/2) 字节，Y 平面后接交错 UV，pitch=width）
+  // -> JPEG 码流。高度为奇数时色度按 ceil(h/2) 行，不足的部分按最后一行复制。
   bool encode(const uint8_t *nv12, size_t nv12_bytes,
               std::vector<uint8_t> &jpeg);
 

@@ -43,13 +43,6 @@ int oic_onevpl_encode(const char *in_bmp, const char *out_jpeg, int quality) {
     std::fprintf(stderr, "[onevpl] encode: %s\n", error.c_str());
     return 1;
   }
-  if ((height & 1u) != 0) {
-    std::fprintf(stderr,
-                 "[onevpl] encode: 硬件 JPEG 要求高度为偶数（NV12 色度 2x2 "
-                 "子采样），实际 %ux%u\n",
-                 width, height);
-    return 1;
-  }
 
   VplJpegEncoder encoder;
   if (!encoder.init(width, height, static_cast<uint32_t>(quality))) {

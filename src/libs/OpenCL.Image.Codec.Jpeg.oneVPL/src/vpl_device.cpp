@@ -1,6 +1,7 @@
 // vpl_device.cpp - Intel 核显硬件单元的枚举与会话建立实现。
 #include "vpl_device.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 
@@ -41,7 +42,13 @@ void append_codec_colors(T &codec, std::vector<uint32_t> &colors) {
     for (mfxU16 m = 0; m < profile.NumMemTypes; ++m) {
       auto &mem = profile.MemDesc[m];
       for (mfxU16 c = 0; c < mem.NumColorFormats; ++c) {
-        colors.push_back(static_cast<uint32_t>(mem.ColorFormats[c]));
+        const uint32_t fourcc = static_cast<uint32_t>(mem.ColorFormats[c]);
+        // 同一个 profile 会为系统内存与加速栈内存各列一遍格式
+        // （Windows 是 D3D11、Linux 是 VA-API），报告的格式列表按去重展示，
+        // 否则 enc_in 里每种格式出现两次，看起来像能力翻倍。
+        if (std::find(colors.begin(), colors.end(), fourcc) == colors.end()) {
+          colors.push_back(fourcc);
+        }
       }
     }
   }

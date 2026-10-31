@@ -182,7 +182,24 @@ bool VplJpegDecoder::decode_nv12(const uint8_t *jpeg, size_t size,
     if (surface == nullptr) {
       continue;
     }
+    // 系统内存输出 surface 同样要先 Map 才能读 Data.Y/UV（dispatcher 不提供
+    // MFXMemory_MapFrame）。读出来的指针只在 Unmap 之前有效。
+    if (surface->FrameInterface == nullptr ||
+        surface->FrameInterface->Map == nullptr ||
+        surface->FrameInterface->Unmap == nullptr) {
+      surface->FrameInterface->Release(surface);
+      last_error = "运行库返回的 surface 没有 Map/Unmap 接口";
+      return false;
+    }
+    const mfxStatus map_sts =
+        surface->FrameInterface->Map(surface, MFX_MAP_READ);
+    if (map_sts != MFX_ERR_NONE) {
+      surface->FrameInterface->Release(surface);
+      last_error = std::string("surface Map 失败：") + vpl_status_str(map_sts);
+      return false;
+    }
     const bool ok = copy_surface_to_nv12(surface, w, h, nv12, last_error);
+    surface->FrameInterface->Unmap(surface);
     if (surface->FrameInterface != nullptr) {
       surface->FrameInterface->Release(surface);
     }

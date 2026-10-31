@@ -26,6 +26,17 @@ icp_selftest                    自测 CLI（OIC_BUILD_CLI，默认 OFF）
 - **探测要能解释失败**：把「运行库没装 / 装了但没有实现 / 有实现但不支持 JPEG」
   三种情况分开报告，上层才能给出可操作的提示。
 
+## 在 Intel 核显上跑起来需要什么
+
+| 平台 | 需要装的东西 | 备注 |
+| --- | --- | --- |
+| Linux | `libvpl2`（dispatcher）+ `libmfx-gen1.2`（vpl-gpu-rt，提供 `libmfx-gen.so.1.2`）+ `intel-media-va-driver`（iHD） | Ubuntu 22.04+ 直接 `apt install libmfx-gen1.2`；权限靠 `/dev/dri/renderD*` 的 ACL，不需要额外加组 |
+| Windows | Intel 显卡驱动（自带 `libvpl.dll` 与 `libmfx-gen.dll`） | 本子项目在 Windows 上只做编译验证，未实机验证 |
+
+本仓库在 Intel UHD 770（Alder Lake-S，device 4680）+ Ubuntu 26.10 上实测通过：
+`units` 报 `jpeg_encode=yes jpeg_decode=yes`，`selftest --require-hardware` 全绿
+（JPEG 往返 43.83 dB，硬件 JPEG strips 的 TIFF 27.01 dB）。
+
 ## 硬件单元（oneVPL 实现）探测
 
 ```bash
@@ -35,12 +46,14 @@ icp_selftest                    自测 CLI（OIC_BUILD_CLI，默认 OFF）
 ```
 oneVPL 运行库：libvpl.so.2
 实现数量：1
-  #0 intel-media [hardware] vendor=Intel device=... accel=VA-API api=2.16 jpeg_encode=yes jpeg_decode=yes enc_in=[NV12] dec_out=[NV12]
+  #0 mfx-gen [hardware] vendor=Intel device=4680/1 accel=VA-API api=2.16 jpeg_encode=yes jpeg_decode=yes enc_in=[NV12,YV12,YUY2,RGB4,BGR4,400P] dec_out=[NV12,RGB4,YUY2]
   Intel 硬件单元：有（JPEG 编码=yes，解码=yes）
 ```
 
-没有 `vpl-gpu-rt`（Windows `libmfx-gen.dll`，Linux `libmfx-gen.so.1`）时实现列表为空，
-输出会明确指出这一点，而不是在 `Init` 处报一个看不懂的 `MFX_ERR_NOT_FOUND`。
+没有 `vpl-gpu-rt` 时实现列表为空，输出会明确指出这一点，而不是在 `Init` 处报一个看不懂的
+`MFX_ERR_NOT_FOUND`。注意 Linux 上 `libvpl` 只是 **dispatcher**，真正干活的是
+`vpl-gpu-rt` 提供的 `libmfx-gen.so.1.2`（Ubuntu/Debian 包名 `libmfx-gen1.2`），
+另外还需要 `intel-media-va-driver` 提供 `iHD_drv_video.so`。
 
 `vpl_probe()` 的实现见 `src/libs/OpenCL.Image.Codec.Jpeg.oneVPL/src/vpl_device.cpp`：
 枚举 `mfxImplDescription`（厂商 / ImplName / API 版本 / 加速栈 / 编解码能力），
@@ -48,12 +61,24 @@ oneVPL 运行库：libvpl.so.2
 
 ## 硬件 JPEG 编解码
 
-- 编码：`MFXMemory_GetSurfaceForEncode` 取运行库内部系统内存 surface，按 pitch 拷入
-  NV12，`MFXVideoENCODE_EncodeFrameAsync` + 同步点等待，输出完整 baseline 码流。
+- 编码：`MFXMemory_GetSurfaceForEncode` 取运行库内部系统内存 surface，
+  `FrameInterface->Map(MFX_MAP_WRITE)` 之后才有 `Data.Y/UV`（dispatcher 不提供
+  `MFXMemory_MapFrame`），按 pitch 拷入 NV12、`Unmap` 再送 `EncodeFrameAsync`。
+  漏掉 `Unmap` 会得到 `MFX_ERR_LOCK_MEMORY`，看起来却像「surface 尺寸不足」。
 - 解码：`DecodeFrameAsync(session, &bs, nullptr, &surface, &sync)` 由解码器自行分配输出
-  surface，按 pitch 拷出 NV12，再转 BGR24 / BGRA32。
-- 宽高**不要求偶数**：oneVPL 的 JPEG 能力表步长是 1，运行库内部按 MCU 补边，SOF 里
-  仍写真实尺寸（TIFF 侧依赖这一点，见下）。色度按 `ceil(h/2)` 行处理。
+  surface，同样先 `Map(MFX_MAP_READ)` 再按 pitch 拷出 NV12，然后 `Unmap` + `Release`；
+  再转 BGR24 / BGRA32。
+- **尺寸规则（在 Intel UHD 770 / Alder Lake-S 上实测）**：
+
+  | 项 | 规则 | 理由 |
+  | --- | --- | --- |
+  | NV12 表面宽高 | 必须偶数 | 2x2 色度子采样 |
+  | NV12 表面高度 | 至少 16 行 | JPEG 编码器按 16 行 MCU 工作，`Height<16` 时 `Init` 返回 `MFX_ERR_INVALID_VIDEO_PARAM`（257x8 失败、257x16 成功） |
+  | JPEG 里的 SOF 尺寸 | 等于 `CropW/CropH`，即真实尺寸 | 运行库按 Crop 写 SOF，所以补的是「表面」而不是「图像」 |
+
+  因此编码器把表面宽高向上取偶、高度补到至少 16，而 `CropW/CropH` 保留真实值——
+  TIFF 用 32 行 strip 编 193 行的图时，末条只有 1 行，照样得到 SOF=257x1 的合法 JPEG。
+  色度按 `ceil(h/2)` 行处理，不足的行按最后一行复制。
 
 ## TIFF（Compression=7 / 1）
 
@@ -74,6 +99,7 @@ oneVPL 运行库：libvpl.so.2
 | --- | --- |
 | strip 里不带 SOI | libtiff 解码每条 strip 前会 `jpeg_abort`，再从头读标记；没有 SOI 会被 libjpeg 判成 `Not a JPEG file` |
 | 把宽度补到偶数再编码 | libtiff 拿 SOF 宽度与 `ImageWidth` 比对，JPEG 比图像宽就报 `JPEG strip/tile size exceeds expected dimensions` 并**拒绝解码** |
+| 把末条 strip 补满 32 行再编码 | 高度方向上 libtiff 只发警告，但会刷屏；所以末条只编码它实际覆盖的行数，而编码器负责把**表面**补到 16 行、SOF 仍写真实高度 |
 
 ## 构建与自测
 
