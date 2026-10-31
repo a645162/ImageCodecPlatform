@@ -26,16 +26,128 @@ icp_selftest                    自测 CLI（OIC_BUILD_CLI，默认 OFF）
 - **探测要能解释失败**：把「运行库没装 / 装了但没有实现 / 有实现但不支持 JPEG」
   三种情况分开报告，上层才能给出可操作的提示。
 
-## 在 Intel 核显上跑起来需要什么
+## 依赖清单
 
-| 平台 | 需要装的东西 | 备注 |
+分三层：**构建期**（编译这个仓库要什么）、**运行期**（跑硬件路径要什么）、
+**可选**（只有自测 CLI 才需要）。每一层都给出「装什么 / 怎么装 / 怎么确认」。
+
+### 1. 构建期（必需）
+
+| 依赖 | 版本 / 形式 | 用途 | 怎么来 |
+| --- | --- | --- | --- |
+| CMake | ≥ 3.16 | 构建 | 系统包 |
+| C++17 编译器 | GCC 9+ / Clang 10+ / MSVC 2019+ | 全部源码只用 C++17，**不需要 C++20/23** | 系统包 |
+| `3rdparty/libvpl` | git submodule（<https://github.com/intel/libvpl>） | **唯一必需的头文件来源**：`mfxvideo.h` / `mfxdefs.h` / `mfxstructures.h` / `mfxdispatcherprefixedfunctions.h` 等，只用头，不链接 | `git submodule update --init --recursive` |
+| `3rdparty/vpl-gpu-rt` | git submodule（<https://github.com/intel/vpl-gpu-rt>） | **不参与构建**，只是运行时实现的参考与版本对照 | 同上（一次性递归即可） |
+
+Linux 额外：`${CMAKE_DL_LIBS}`（glibc < 2.34 上是 `-ldl`，之后已并入 libc）。
+CMake 会自动处理，**不需要**手动加 `-ldl`。
+
+明确**不需要**：`libvpl-dev` / `libmfx-dev` 的 `.so` 导入库、pkg-config 文件。
+oneVPL 在运行期用 `dlopen("libvpl.so.2")` / `LoadLibraryA("libvpl.dll")` 动态加载，
+所有函数指针都从 dispatcher 取（见 `vpl_dyn.h`）。所以**编译机可以完全不装 oneVPL**，
+只要 submodule 头在就能编。
+
+`CMakeLists.txt` 里有一道显式检查：`3rdparty/libvpl/api/vpl/mfxvideo.h` 不存在时直接
+`FATAL_ERROR` 提示「请先执行 git submodule update --init --recursive」，避免只看到
+一堆 `mfxU16 未定义`。
+
+### 2. 运行期（跑硬件路径必需）
+
+#### Linux
+
+需要**三件套**，缺一不可：
+
+| 包 | 提供 | 缺了会怎样 |
 | --- | --- | --- |
-| Linux | `libvpl2`（dispatcher）+ `libmfx-gen1.2`（vpl-gpu-rt，提供 `libmfx-gen.so.1.2`）+ `intel-media-va-driver`（iHD） | Ubuntu 22.04+ 直接 `apt install libmfx-gen1.2`；权限靠 `/dev/dri/renderD*` 的 ACL，不需要额外加组 |
-| Windows | Intel 显卡驱动（自带 `libvpl.dll` 与 `libmfx-gen.dll`） | 本子项目在 Windows 上只做编译验证，未实机验证 |
+| `libvpl2` | `libvpl.so.2`（**dispatcher**，只负责找实现、转发调用） | `vpl_probe()` 报「未找到 oneVPL 运行库」，硬件项 SKIP |
+| `libmfx-gen1.2` | `libmfx-gen.so.1.2`（**vpl-gpu-rt**，真正驱动 GPU 媒体引擎的实现） | 实现列表为空，报「运行库已加载但没有任何实现」 |
+| `intel-media-va-driver` | `iHD_drv_video.so`（VA-API 驱动，`libmfx-gen` 通过它说话） | VA-API 初始化失败，实现枚举不出来 |
 
-本仓库在 Intel UHD 770（Alder Lake-S，device 4680）+ Ubuntu 26.10 上实测通过：
-`units` 报 `jpeg_encode=yes jpeg_decode=yes`，`selftest --require-hardware` 全绿
-（JPEG 往返 43.83 dB，硬件 JPEG strips 的 TIFF 27.01 dB）。
+```bash
+sudo apt install libvpl2 libmfx-gen1.2 intel-media-va-driver
+```
+
+`libva2` / `libva-drm2` 是 `libmfx-gen1.2` 的依赖，apt 会自动带上；
+`intel-media-va-driver` 在 Ubuntu 22.04+ 已经是默认 iHD 驱动。
+
+**包名对照**（不同发行版叫法不同，认「提供哪个 .so」而不是认包名）：
+
+| 发行版 | dispatcher | vpl-gpu-rt（Intel 实现） | VA-API 驱动 |
+| --- | --- | --- | --- |
+| Ubuntu / Debian | `libvpl2` | `libmfx-gen1.2`（universe） | `intel-media-va-driver` |
+| Fedora / RHEL | `oneVPL` | `oneVPL-intel-gpu` | `intel-media-driver` |
+| Arch | `onevpl` | `onevpl-intel-gpu` | `intel-media-driver` |
+| openSUSE | `libvpl2` | `onevpl-intel-gpu` | `intel-media-driver` |
+| Windows | 随 Intel 显卡驱动安装 `libvpl.dll` | 随驱动安装 `libmfx-gen.dll` | 驱动内部（D3D11/Media SDK） |
+
+装完的确认命令（三条都要有输出）：
+
+```bash
+ldconfig -p | grep -E 'libvpl\.so\.2|libmfx-gen\.so\.1\.2'
+ls /usr/lib/x86_64-linux-gnu/dri/iHD_drv_video.so
+ls -l /dev/dri/renderD*
+```
+
+**注意 `libmfx-gen.so.1.2` 没有 `libmfx-gen.so.1` 这个软链**：Ubuntu 26.10 的
+`libmfx-gen1.2` 只装 `libmfx-gen.so.1.2 -> libmfx-gen.so.1.2.16`。dispatcher
+`libvpl.so.2` 内部硬编码的就是 `libmfx-gen.so.1.2`，所以不要自己改成 `.so.1`。
+
+**设备权限**：需要能打开 Intel 的 render node（`/dev/dri/renderD128` 或 `renderD129`）。
+现代 systemd-logind 会给当前登录用户自动加 ACL，`getfacl /dev/dri/renderD129`
+能看到 `user:<你>:rw-` 即可，**不需要**把用户加进 `render` 组、也不需要 root。
+只有 SSH 无 logind 会话的机器才需要 `sudo usermod -aG render $USER` 并重新登录。
+
+#### Windows
+
+| 依赖 | 提供 | 备注 |
+| --- | --- | --- |
+| Intel 显卡驱动（Intel Graphics Driver，含 Media 组件） | `libvpl.dll` + `libmfx-gen.dll` | 驱动安装时装进 `System32`，**不要**手工拷 DLL |
+| VC++ 运行库 | `vcruntime140.dll` 等 | 与仓库其它部分一致，由安装器/发布包负责 |
+
+Windows 侧**不编译、不链接** oneVPL SDK：只用 submodule 里的头，运行期
+`LoadLibraryA("libvpl.dll")`。所以不需要安装 Intel oneVPL SDK，也不需要配 `INCLUDE`/`LIB`。
+本子项目在 Windows 上**只做编译验证，未实机验证硬件路径**（见下方实测环境）。
+
+### 3. 可选（只有自测 CLI 需要）
+
+`OIC_BUILD_CLI=ON` 时 `cmake/` 会 `find_package(JPEG QUIET)` / `find_package(TIFF QUIET)`，
+都是**可选**：找不到时对应自测项 SKIP，整个程序仍可构建。
+
+| 包 | CMake 目标 | 用途 | 缺了会怎样 |
+| --- | --- | --- | --- |
+| `libjpeg`（Ubuntu 26.10+ 是 `libjpeg-dev`；老版本是 `libjpeg-turbo8-dev`） | `JPEG::JPEG` | `--software` 的参考编码器，让**没有 Intel 硬件的机器也能验证 TIFF 容器** | `tiff --software` 与容器自测 SKIP |
+| `libtiff`（`libtiff-dev`） | `TIFF::TIFF` | **只用于解码校验**（写文件自己实现，libtiff 的 JPEG codec 没有「接收已编码条带」的入口） | TIFF 写出后的 PSNR 校验 SKIP |
+
+```bash
+sudo apt install libjpeg-dev libtiff-dev    # 仅自测 CLI 需要
+```
+
+库本身的三个 target（`Platform` / `Jpeg.oneVPL` / `Tiff`）**不依赖 libjpeg、libtiff**：
+父仓库 `IMAGECODEC_OFFLOAD_WITH_PLATFORM=ON` 时不会因为它们缺失而构建失败。
+
+### 4. 明确不需要的东西
+
+| 常被误以为需要 | 实际情况 |
+| --- | --- |
+| D3D11 / DXGI 设备 | 已彻底移除。帧只走系统内存，Windows 与 Linux 同一份代码 |
+| OpenCL / CUDA / Vulkan 运行时 | 与这些后端无关，本子项目不链接任何 GPU 计算栈 |
+| X server / Wayland / 显示输出 | 纯计算路径，无窗口、无 GL。服务器上只挂核显（无显示器）也能跑 |
+| root 权限 | 只要 render node 可读写即可 |
+| Intel oneVPL SDK 安装包 | 头文件来自 submodule；运行库是系统包/驱动 |
+| `vpl-gpu-rt` 源码编译 | Ubuntu/Debian 直接用 `libmfx-gen1.2` 二进制包即可 |
+
+### 5. 实测环境
+
+| 项 | 值 |
+| --- | --- |
+| CPU / iGPU | Intel Core i9-12900K / **Intel UHD Graphics 770**（Alder Lake-S GT1，`8086:4680`） |
+| 系统 | Ubuntu 26.10，kernel 7.3.0-10-generic |
+| 驱动栈 | i915（渲染节点 `/dev/dri/renderD129`），显示输出在另一块 NVIDIA RTX 4070 上 |
+| dispatcher | `libvpl2` 1:2.16.0-1 → `libvpl.so.2.16` |
+| Intel 实现 | `libmfx-gen1.2` 26.1.2-1.1 → `libmfx-gen.so.1.2.16` |
+| VA-API 驱动 | `intel-media-va-driver` 26.2.4 → `iHD_drv_video.so` |
+| 结果 | `units` 报 `jpeg_encode=yes jpeg_decode=yes`；`selftest --require-hardware` 全绿（JPEG 往返 **43.83 dB**，硬件 JPEG strips 的 TIFF **27.01 dB**） |
 
 ## 硬件单元（oneVPL 实现）探测
 
@@ -104,17 +216,25 @@ oneVPL 运行库：libvpl.so.2
 ## 构建与自测
 
 ```bash
-# 只构建库
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+# 0) 首次克隆：取 oneVPL 头（缺了会 FATAL_ERROR 提示这一句）
+git submodule update --init --recursive
 
-# 连自测 CLI 一起构建（需要 libjpeg / libtiff 才能跑容器自测）
+# 1) 只构建库（不需要 libjpeg / libtiff，也不需要装 oneVPL 运行库）
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build -j
+
+# 2) 连自测 CLI 一起构建（libjpeg / libtiff 可选，缺了就 SKIP 对应自测项）
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DOIC_BUILD_CLI=ON
 cmake --build build -j
-./build/src/cli/icp_selftest          # 探测硬件 + 容器自测 + 硬件往返
+
+# 3) 硬件路径验证：依赖没装全时这里是 SKIP 或明确的失败原因
+./build/src/cli/icp_selftest units
+./build/src/cli/icp_selftest selftest --require-hardware
 ```
 
-首次克隆需要 `git submodule update --init --recursive`（`3rdparty/libvpl` 提供 API 头，
-`3rdparty/vpl-gpu-rt` 作为运行时实现参考）。
+configure 阶段会把实际找到的依赖打出来（`icp_selftest: libjpeg 3.1.3` /
+`未找到 libtiff（容器自测将跳过）`），不需要猜。若 `units` 报「实现数量：0」，
+按上面 **依赖清单 → 运行期** 的三件套逐条核对。
 
 ```
 icp_selftest                                   # = selftest
