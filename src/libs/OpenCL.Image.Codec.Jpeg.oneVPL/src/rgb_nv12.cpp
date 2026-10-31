@@ -146,6 +146,7 @@ void nv12_to_bgra32(const uint8_t *nv12, uint8_t *bgra, uint32_t w,
       d[1] = static_cast<uint8_t>(g);
       d[2] = static_cast<uint8_t>(r);
       d[3] = 255;
+      d += 4;
     }
   }
 }
@@ -166,6 +167,7 @@ void nv12_to_bgr24(const uint8_t *nv12, uint8_t *bgr, uint32_t w, uint32_t h) {
       d[0] = static_cast<uint8_t>(b);
       d[1] = static_cast<uint8_t>(g);
       d[2] = static_cast<uint8_t>(r);
+      d += 3;
     }
   }
 }
@@ -186,6 +188,7 @@ void nv12_to_rgb24(const uint8_t *nv12, uint8_t *rgb, uint32_t w, uint32_t h) {
       d[0] = static_cast<uint8_t>(r);
       d[1] = static_cast<uint8_t>(g);
       d[2] = static_cast<uint8_t>(b);
+      d += 3;
     }
   }
 }
