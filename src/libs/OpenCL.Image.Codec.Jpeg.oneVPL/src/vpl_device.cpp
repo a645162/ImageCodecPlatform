@@ -1,3 +1,11 @@
+/*
+ * File: vpl_device.cpp
+ * Brief: Vpl device.
+ * Author: Haomin Kong
+ * Email: a645162@163.com
+ * Created: 2026-10-31
+ */
+
 // vpl_device.cpp - Intel 核显硬件单元的枚举与会话建立实现。
 #include "vpl_device.h"
 

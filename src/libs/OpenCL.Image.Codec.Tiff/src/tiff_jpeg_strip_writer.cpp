@@ -1,3 +1,11 @@
+/*
+ * File: tiff_jpeg_strip_writer.cpp
+ * Brief: Tiff jpeg strip writer.
+ * Author: Haomin Kong
+ * Email: a645162@163.com
+ * Created: 2026-10-31
+ */
+
 // tiff_jpeg_strip_writer.cpp - 自写 TIFF 6.0 容器（Compression=1 / 7）。
 #include "tiff_jpeg_strip_writer.h"
 

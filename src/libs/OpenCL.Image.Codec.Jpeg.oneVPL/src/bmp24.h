@@ -1,3 +1,11 @@
+/*
+ * File: bmp24.h
+ * Brief: Bmp24.
+ * Author: Haomin Kong
+ * Email: a645162@163.com
+ * Created: 2026-10-31
+ */
+
 // bmp24.h - 24-bit 未压缩 BMP 读写（CLI 与自测程序的中转格式）。
 //
 // BMP 只是调试中转：真正的输入输出是 JPEG / TIFF。这里刻意只支持

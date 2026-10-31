@@ -1,3 +1,11 @@
+/*
+ * File: selftest_support.cpp
+ * Brief: Selftest support.
+ * Author: Haomin Kong
+ * Email: a645162@163.com
+ * Created: 2026-10-31
+ */
+
 // selftest_support.cpp - 自测参考实现（libjpeg / libtiff，按构建开关裁剪）。
 #include "selftest_support.h"
 

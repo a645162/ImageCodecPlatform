@@ -1,3 +1,11 @@
+/*
+ * File: rgb_nv12.cpp
+ * Brief: Rgb nv12.
+ * Author: Haomin Kong
+ * Email: a645162@163.com
+ * Created: 2026-08-12
+ */
+
 // rgb_nv12.cpp - RGB/BGR <-> NV12 标量转换（BT.601 全范围，与 JPEG 定义一致）。
 #include "rgb_nv12.h"
 

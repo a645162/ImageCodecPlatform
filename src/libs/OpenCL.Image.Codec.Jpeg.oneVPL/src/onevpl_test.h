@@ -1,3 +1,11 @@
+/*
+ * File: onevpl_test.h
+ * Brief: Onevpl test.
+ * Author: Haomin Kong
+ * Email: a645162@163.com
+ * Created: 2026-08-12
+ */
+
 // onevpl_test.h - oneVPL JPEG 后端的 C 入口（供 CLI / 集成方调用，签名固定）。
 //
 // 所有函数返回 0 表示成功，非 0 表示失败（错误已打印到 stderr）。

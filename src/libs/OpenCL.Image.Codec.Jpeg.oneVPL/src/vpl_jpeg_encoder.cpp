@@ -1,3 +1,11 @@
+/*
+ * File: vpl_jpeg_encoder.cpp
+ * Brief: Vpl jpeg encoder.
+ * Author: Haomin Kong
+ * Email: a645162@163.com
+ * Created: 2026-08-12
+ */
+
 // vpl_jpeg_encoder.cpp - oneVPL 硬件 JPEG 编码器实现（系统内存，无 D3D11 依赖）。
 #include "vpl_jpeg_encoder.h"
 

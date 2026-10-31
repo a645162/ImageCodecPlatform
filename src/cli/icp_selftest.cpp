@@ -1,3 +1,11 @@
+/*
+ * File: icp_selftest.cpp
+ * Brief: Icp selftest.
+ * Author: Haomin Kong
+ * Email: a645162@163.com
+ * Created: 2026-10-31
+ */
+
 // icp_selftest.cpp - ImageCodecPlatform 的自测 CLI。
 //
 // 子命令：

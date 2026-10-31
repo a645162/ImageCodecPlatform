@@ -1,3 +1,11 @@
+/*
+ * File: vpl_jpeg_encoder.h
+ * Brief: Vpl jpeg encoder.
+ * Author: Haomin Kong
+ * Email: a645162@163.com
+ * Created: 2026-08-12
+ */
+
 // vpl_jpeg_encoder.h - oneVPL 硬件 JPEG 编码器（系统内存 NV12 输入）。
 //
 // 与旧实现的区别：不再依赖 D3D11 / DXGI。输入帧走 MFX_IOPATTERN_IN_SYSTEM_MEMORY，

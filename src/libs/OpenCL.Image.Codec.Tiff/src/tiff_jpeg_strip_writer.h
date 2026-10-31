@@ -1,3 +1,11 @@
+/*
+ * File: tiff_jpeg_strip_writer.h
+ * Brief: Tiff jpeg strip writer.
+ * Author: Haomin Kong
+ * Email: a645162@163.com
+ * Created: 2026-10-31
+ */
+
 // tiff_jpeg_strip_writer.h - 自写 TIFF 6.0 容器，把「预编码的 JPEG strips」
 // 直接写进 TIFF（Compression=7），以及无硬件时的 Compression=1 基线。
 //

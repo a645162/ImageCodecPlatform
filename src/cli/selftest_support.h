@@ -1,3 +1,11 @@
+/*
+ * File: selftest_support.h
+ * Brief: Selftest support.
+ * Author: Haomin Kong
+ * Email: a645162@163.com
+ * Created: 2026-10-31
+ */
+
 // selftest_support.h - 自测用的参考实现（libjpeg 编码 / libtiff 解码）。
 //
 // 它们只服务 CLI 自测，不进库：

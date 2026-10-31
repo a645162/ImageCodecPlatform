@@ -1,3 +1,9 @@
+# File: src/libs/OpenCL.Image.Codec.Jpeg.oneVPL/CMakeLists.txt
+# Brief: CMake build configuration.
+# Author: Haomin Kong
+# Email: a645162@163.com
+# Created: 2026-08-12
+
 # oneVPL（Intel 媒体引擎）JPEG 后端：Linux + Windows 双平台。
 #
 # 可移植性说明：

@@ -1,3 +1,9 @@
+# File: src/cli/CMakeLists.txt
+# Brief: CMake build configuration.
+# Author: Haomin Kong
+# Email: a645162@163.com
+# Created: 2026-10-31
+
 # 自测 CLI（icp_selftest）：验证硬件单元探测、硬件 JPEG 往返与 TIFF 容器。
 #
 # libjpeg / libtiff 是可选的：

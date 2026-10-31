@@ -1,3 +1,11 @@
+<!--
+ * File: README.md
+ * Brief: ImageCodecPlatform.
+ * Author: Haomin Kong
+ * Email: a645162@163.com
+ * Created: 2026-08-12
+-->
+
 # ImageCodecPlatform
 
 平台抽象与**厂商专用**（Intel 媒体引擎）编解码后端。它不是「又一个通用后端」，

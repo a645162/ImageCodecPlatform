@@ -1,3 +1,11 @@
+/*
+ * File: jpeg_stream.cpp
+ * Brief: Jpeg stream.
+ * Author: Haomin Kong
+ * Email: a645162@163.com
+ * Created: 2026-10-31
+ */
+
 // jpeg_stream.cpp - baseline JPEG 码流分段解析实现。
 #include "jpeg_stream.h"
 

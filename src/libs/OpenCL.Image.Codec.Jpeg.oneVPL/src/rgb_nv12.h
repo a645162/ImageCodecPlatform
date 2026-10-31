@@ -1,3 +1,11 @@
+/*
+ * File: rgb_nv12.h
+ * Brief: Rgb nv12.
+ * Author: Haomin Kong
+ * Email: a645162@163.com
+ * Created: 2026-08-12
+ */
+
 // rgb_nv12.h - 24-bit RGB/BGR <-> NV12 转换（CPU 实现，BT.601 全范围 / JPEG）。
 //
 // NV12 布局（与 oneVPL 表面一致）：

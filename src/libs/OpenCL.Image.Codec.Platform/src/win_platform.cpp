@@ -1,3 +1,11 @@
+/*
+ * File: win_platform.cpp
+ * Brief: Win platform.
+ * Author: Haomin Kong
+ * Email: a645162@163.com
+ * Created: 2026-08-12
+ */
+
 // win_platform.cpp - Windows 平台抽象实现（可执行目录 / 单调时钟 / 休眠）。
 #include "oic_platform.h"
 

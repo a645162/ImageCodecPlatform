@@ -1,3 +1,11 @@
+/*
+ * File: vpl_device.h
+ * Brief: Vpl device.
+ * Author: Haomin Kong
+ * Email: a645162@163.com
+ * Created: 2026-10-31
+ */
+
 // vpl_device.h - Intel 核显硬件单元（oneVPL 实现）的枚举与会话建立。
 //
 // 一个「硬件单元」就是 oneVPL 运行库里的一条实现（mfxImplDescription）：

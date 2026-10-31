@@ -1,3 +1,11 @@
+/*
+ * File: onevpl_test.cpp
+ * Brief: Onevpl test.
+ * Author: Haomin Kong
+ * Email: a645162@163.com
+ * Created: 2026-08-12
+ */
+
 // onevpl_test.cpp - oneVPL JPEG 后端的 C 入口实现（BMP 中转 + 探测）。
 #include "onevpl_test.h"
 

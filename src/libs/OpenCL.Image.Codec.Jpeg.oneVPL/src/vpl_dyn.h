@@ -1,3 +1,11 @@
+/*
+ * File: vpl_dyn.h
+ * Brief: Vpl dyn.
+ * Author: Haomin Kong
+ * Email: a645162@163.com
+ * Created: 2026-08-12
+ */
+
 // vpl_dyn.h - oneVPL 运行库的跨平台动态加载绑定。
 //
 // Linux 用 dlopen，Windows 用 LoadLibrary；两种平台都不需要导入库。

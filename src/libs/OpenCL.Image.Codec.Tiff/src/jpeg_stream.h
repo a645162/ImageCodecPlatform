@@ -1,3 +1,11 @@
+/*
+ * File: jpeg_stream.h
+ * Brief: Jpeg stream.
+ * Author: Haomin Kong
+ * Email: a645162@163.com
+ * Created: 2026-10-31
+ */
+
 // jpeg_stream.h - baseline JPEG 码流的分段解析（为 TIFF JPEG strips 服务）。
 //
 // TIFF 的 Compression=7 有两种合法写法：

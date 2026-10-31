@@ -1,3 +1,11 @@
+/*
+ * File: posix_platform.cpp
+ * Brief: Posix platform.
+ * Author: Haomin Kong
+ * Email: a645162@163.com
+ * Created: 2026-10-31
+ */
+
 // posix_platform.cpp - POSIX（Linux/macOS）平台抽象实现。
 //
 // 可执行目录用 /proc/self/exe 解析（Linux）；其它 POSIX 系统回退到

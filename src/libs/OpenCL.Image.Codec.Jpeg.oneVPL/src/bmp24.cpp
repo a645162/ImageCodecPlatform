@@ -1,3 +1,11 @@
+/*
+ * File: bmp24.cpp
+ * Brief: Bmp24.
+ * Author: Haomin Kong
+ * Email: a645162@163.com
+ * Created: 2026-10-31
+ */
+
 // bmp24.cpp - 24-bit 未压缩 BMP 读写实现。
 #include "bmp24.h"
 

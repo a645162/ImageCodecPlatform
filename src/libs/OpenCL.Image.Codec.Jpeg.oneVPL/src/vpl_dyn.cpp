@@ -1,3 +1,11 @@
+/*
+ * File: vpl_dyn.cpp
+ * Brief: Vpl dyn.
+ * Author: Haomin Kong
+ * Email: a645162@163.com
+ * Created: 2026-08-12
+ */
+
 // vpl_dyn.cpp - oneVPL 运行库动态加载实现（Linux dlopen / Windows LoadLibrary）。
 #include "vpl_dyn.h"
 

@@ -1,3 +1,9 @@
+# File: src/libs/OpenCL.Image.Codec.Tiff/CMakeLists.txt
+# Brief: CMake build configuration.
+# Author: Haomin Kong
+# Email: a645162@163.com
+# Created: 2026-10-31
+
 # TIFF 6.0 容器写出：把预编码的 JPEG strips（Compression=7）或未压缩
 # RGB strips（Compression=1）写进 TIFF。
 #

@@ -1,3 +1,11 @@
+/*
+ * File: oic_platform.h
+ * Brief: Oic platform.
+ * Author: Haomin Kong
+ * Email: a645162@163.com
+ * Created: 2026-08-12
+ */
+
 // platform/oic_platform.h - 内部平台抽象（不对外导出）。
 #pragma once
 

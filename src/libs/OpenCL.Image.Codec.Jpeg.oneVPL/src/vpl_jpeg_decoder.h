@@ -1,3 +1,11 @@
+/*
+ * File: vpl_jpeg_decoder.h
+ * Brief: Vpl jpeg decoder.
+ * Author: Haomin Kong
+ * Email: a645162@163.com
+ * Created: 2026-08-12
+ */
+
 // vpl_jpeg_decoder.h - oneVPL 硬件 JPEG 解码器（系统内存 NV12 输出）。
 //
 // 与旧实现的区别：不再创建 D3D11 设备，也不自带帧分配器。解码输出走
