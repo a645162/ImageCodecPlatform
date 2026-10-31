@@ -111,12 +111,12 @@ Windows 侧**不编译、不链接** oneVPL SDK：只用 submodule 里的头，�
 
 ### 3. 可选（只有自测 CLI 需要）
 
-`OIC_BUILD_CLI=ON` 时 `cmake/` 会 `find_package(JPEG QUIET)` / `find_package(TIFF QUIET)`，
-都是**可选**：找不到时对应自测项 SKIP，整个程序仍可构建。
+`OIC_BUILD_CLI=ON` 时 `src/cli/CMakeLists.txt` 会 `find_package(JPEG QUIET)` /
+`find_package(TIFF QUIET)`，都是**可选**：找不到时对应自测项 SKIP，整个程序仍可构建。
 
 | 包 | CMake 目标 | 用途 | 缺了会怎样 |
 | --- | --- | --- | --- |
-| `libjpeg`（Ubuntu 26.10+ 是 `libjpeg-dev`；老版本是 `libjpeg-turbo8-dev`） | `JPEG::JPEG` | `--software` 的参考编码器，让**没有 Intel 硬件的机器也能验证 TIFF 容器** | `tiff --software` 与容器自测 SKIP |
+| `libjpeg`（Debian/Ubuntu 包名 `libjpeg-dev`，底层实现是 libjpeg-turbo） | `JPEG::JPEG` | `--software` 的参考编码器，让**没有 Intel 硬件的机器也能验证 TIFF 容器** | `tiff --software` 与容器自测 SKIP |
 | `libtiff`（`libtiff-dev`） | `TIFF::TIFF` | **只用于解码校验**（写文件自己实现，libtiff 的 JPEG codec 没有「接收已编码条带」的入口） | TIFF 写出后的 PSNR 校验 SKIP |
 
 ```bash
