@@ -1,46 +1,63 @@
-// vpl_jpeg_encoder.h - oneVPL (libvpl.dll) 硬件 JPEG 编码器。
+// vpl_jpeg_encoder.h - oneVPL 硬件 JPEG 编码器（系统内存 NV12 输入）。
 //
-// 输入 NV12（系统内存，Y 平面 + 交错 UV，4:2:0，pitch=width），
-// 输出 JPEG 码流（baseline）。基于 oneVPL loader API 动态加载，无导入库。
+// 与旧实现的区别：不再依赖 D3D11 / DXGI。输入帧走 MFX_IOPATTERN_IN_SYSTEM_MEMORY，
+// 由 MFXMemory_GetSurfaceForEncode 取内部系统内存 surface，再把 NV12 拷进去。
+// 这样 Linux（VA-API）与 Windows（D3D11，但只用系统内存）共用同一条代码路径。
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
 
-#include "vpl_dyn.h"
+#include "vpl_device.h"
 
 namespace oic {
 namespace jpeg {
 namespace onevpl {
 
-// oneVPL 硬件 JPEG 编码器（libvpl.dll 动态加载）。
+// oneVPL 硬件 JPEG 编码器。一次 init 对应一组固定的宽高与质量，
+// 同一实例可以连续编码多帧（TIFF 的每条 strip 就是一帧）。
 struct VplJpegEncoder {
-    VplDyn dyn;                       // 动态绑定的 libvpl.dll 入口
-    mfxLoader loader = nullptr;
-    mfxSession session = nullptr;
-    mfxVideoParam param{};
-    mfxFrameSurface1 surface{};
-    mfxU32 width = 0, height = 0;
-    std::string impl_name;
+  VplSession vpl;
+  mfxVideoParam param{};
+  mfxU32 width = 0;
+  mfxU32 height = 0;
+  mfxU32 surface_width = 0;  // 运行库要求的输入对齐宽度
+  mfxU32 surface_height = 0; // 运行库要求的输入对齐高度
+  std::string impl_name;
+  std::string last_error;
 
-    // 建立会话并初始化编码器。quality 0..100。失败返回 false（不崩溃）。
-    bool init(uint32_t w, uint32_t h, uint32_t quality);
+  VplJpegEncoder() = default;
+  VplJpegEncoder(const VplJpegEncoder &) = delete;
+  VplJpegEncoder &operator=(const VplJpegEncoder &) = delete;
+  ~VplJpegEncoder() { close(); }
 
-    // 编码一帧 NV12（w*h*3/2 字节，Y 后接 UV）-> JPEG 码流。
-    // 成功返回 true 且 jpeg 非空；失败返回 false。
-    bool encode(const uint8_t* nv12, size_t nv12_bytes, std::vector<uint8_t>& jpeg);
+  // 建立会话并初始化编码器。width/height 必须为非零偶数；quality 0..100。
+  bool init(uint32_t w, uint32_t h, uint32_t quality);
+  // 按指定硬件单元初始化（多显卡机器上选核显时使用）。
+  bool init_on_unit(const VplUnitInfo &unit, uint32_t w, uint32_t h,
+                    uint32_t quality);
 
-    // RGB24(r,g,b) 便捷入口：内部转 NV12 后编码。
-    bool encode_rgb24(const uint8_t* rgb, size_t rgb_bytes, std::vector<uint8_t>& jpeg);
+  // 编码一帧 NV12（w*h*3/2 字节，Y 平面后接交错 UV，pitch=width）-> JPEG 码流。
+  bool encode(const uint8_t *nv12, size_t nv12_bytes,
+              std::vector<uint8_t> &jpeg);
 
-    // BGR24(b,g,r) 便捷入口：内部转 NV12 后编码。
-    bool encode_bgr24(const uint8_t* bgr, size_t bgr_bytes, std::vector<uint8_t>& jpeg);
+  // RGB24(r,g,b) / BGR24(b,g,r) 便捷入口：内部转 NV12 后编码。
+  bool encode_rgb24(const uint8_t *rgb, size_t rgb_bytes,
+                    std::vector<uint8_t> &jpeg);
+  bool encode_bgr24(const uint8_t *bgr, size_t bgr_bytes,
+                    std::vector<uint8_t> &jpeg);
 
-    // 释放会话与动态库。
-    void close();
+  // 释放会话与运行库。
+  void close();
+
+private:
+  bool apply_params(uint32_t w, uint32_t h, uint32_t quality);
+  // 一帧编码 + 冲刷；成功返回整段 JPEG。
+  bool encode_surface(mfxFrameSurface1 *surface, std::vector<uint8_t> &jpeg);
 };
 
-}  // namespace onevpl
-}  // namespace jpeg
-}  // namespace oic
+} // namespace onevpl
+} // namespace jpeg
+} // namespace oic

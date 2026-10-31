@@ -1,9 +1,7 @@
-// vpl_jpeg_encoder.cpp - oneVPL 硬件 JPEG 编码器实现（全部经 VplDyn 动态绑定）。
+// vpl_jpeg_encoder.cpp - oneVPL 硬件 JPEG 编码器实现（系统内存，无 D3D11 依赖）。
 #include "vpl_jpeg_encoder.h"
 
-#include <cstdio>
 #include <cstring>
-#include <memory>
 
 #include "rgb_nv12.h"
 
@@ -11,210 +9,308 @@ namespace oic {
 namespace jpeg {
 namespace onevpl {
 
-bool VplJpegEncoder::init(uint32_t w, uint32_t h, uint32_t quality)
-{
-    width = (mfxU32)w;
-    height = (mfxU32)h;
+namespace {
 
-    if (!dyn.load()) {
-        std::fprintf(stderr, "[vpl] encoder: libvpl.dll 加载失败\n");
-        return false;
+constexpr mfxU32 kSyncTimeoutMs = 60000;
+constexpr size_t kInitialBitstreamBytes = 256 * 1024;
+constexpr mfxU16 kMinJpegQuality = 1;
+constexpr mfxU16 kMaxJpegQuality = 100;
+
+// 把运行库给的对齐尺寸算成实际要拷贝的边界：既不能超过 surface，
+// 也不能把调用方的数据读越界。
+mfxU16 clamp_u16(uint32_t value) {
+  return value > 0xFFFF ? 0xFFFF : static_cast<mfxU16>(value);
+}
+
+} // namespace
+
+bool VplJpegEncoder::init(uint32_t w, uint32_t h, uint32_t quality) {
+  std::string error;
+  if (!vpl.open_intel(true, false, &error)) {
+    last_error = error;
+    return false;
+  }
+  impl_name = vpl.unit.impl_name;
+  if (!apply_params(w, h, quality)) {
+    close();
+    return false;
+  }
+  return true;
+}
+
+bool VplJpegEncoder::init_on_unit(const VplUnitInfo &unit, uint32_t w,
+                                  uint32_t h, uint32_t quality) {
+  std::string error;
+  if (!vpl.open(unit, &error)) {
+    last_error = error;
+    return false;
+  }
+  impl_name = vpl.unit.impl_name;
+  if (!apply_params(w, h, quality)) {
+    close();
+    return false;
+  }
+  return true;
+}
+
+bool VplJpegEncoder::apply_params(uint32_t w, uint32_t h, uint32_t quality) {
+  width = w;
+  height = h;
+  // 尺寸不要求偶数：oneVPL 的 JPEG 能力表 Width/Height 步长都是 1，
+  // 运行库内部会按 MCU 补边，SOF 里仍写真实宽高。TIFF 侧也依赖这一点
+  // （libtiff 会拿 SOF 宽高与 ImageWidth/ImageLength 比对，补过边的尺寸
+  // 会被判成「strip 比图像还大」而拒绝解码）。
+  if (w == 0 || h == 0) {
+    last_error = "尺寸不能为 0";
+    return false;
+  }
+  // 硬件 JPEG 输出 NV12，色度按 2x2 子采样，因此高度必须是偶数
+  // （宽度奇数没有问题：JPEG 的最后一个 MCU 列内部补边，SOF 里仍写真实宽度）。
+  if ((h & 1u) != 0) {
+    last_error = "硬件 JPEG 要求高度为偶数（NV12 色度按 2x2 子采样）";
+    return false;
+  }
+
+  std::memset(&param, 0, sizeof(param));
+  param.mfx.CodecId = MFX_CODEC_JPEG;
+  param.mfx.CodecProfile = MFX_PROFILE_JPEG_BASELINE;
+  param.mfx.FrameInfo.FourCC = MFX_FOURCC_NV12;
+  param.mfx.FrameInfo.ChromaFormat = MFX_CHROMAFORMAT_YUV420;
+  param.mfx.FrameInfo.Width = clamp_u16(w);
+  param.mfx.FrameInfo.Height = clamp_u16(h);
+  param.mfx.FrameInfo.CropX = 0;
+  param.mfx.FrameInfo.CropY = 0;
+  param.mfx.FrameInfo.CropW = clamp_u16(w);
+  param.mfx.FrameInfo.CropH = clamp_u16(h);
+  param.mfx.FrameInfo.PicStruct = MFX_PICSTRUCT_PROGRESSIVE;
+  param.mfx.FrameInfo.FrameRateExtN = 30;
+  param.mfx.FrameInfo.FrameRateExtD = 1;
+  param.mfx.FrameInfo.BitDepthLuma = 8;
+  param.mfx.FrameInfo.BitDepthChroma = 8;
+  mfxU16 q = static_cast<mfxU16>(quality);
+  param.mfx.Quality = q < kMinJpegQuality
+                          ? kMinJpegQuality
+                          : (q > kMaxJpegQuality ? kMaxJpegQuality : q);
+  param.mfx.Interleaved = 1;
+  param.IOPattern = MFX_IOPATTERN_IN_SYSTEM_MEMORY;
+
+  // Query 允许运行库调整参数（对齐等），最多重试三次。
+  mfxStatus sts = MFX_ERR_NONE;
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    sts = vpl.dyn.MFXVideoENCODE_Query(vpl.session, &param, &param);
+    if (sts != MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
+      break;
     }
+  }
+  if (sts != MFX_ERR_NONE) {
+    last_error =
+        std::string("MFXVideoENCODE_Query 失败：") + vpl_status_str(sts);
+    return false;
+  }
 
-    loader = dyn.MFXLoad();
-    if (!loader) {
-        std::fprintf(stderr, "[vpl] encoder: MFXLoad 失败\n");
-        dyn.unload();
-        return false;
+  mfxFrameAllocRequest request{};
+  sts = vpl.dyn.MFXVideoENCODE_QueryIOSurf(vpl.session, &param, &request);
+  if (sts != MFX_ERR_NONE && sts != MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
+    last_error =
+        std::string("MFXVideoENCODE_QueryIOSurf 失败：") + vpl_status_str(sts);
+    return false;
+  }
+
+  sts = vpl.dyn.MFXVideoENCODE_Init(vpl.session, &param);
+  if (sts != MFX_ERR_NONE && sts != MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
+    last_error =
+        std::string("MFXVideoENCODE_Init 失败：") + vpl_status_str(sts);
+    return false;
+  }
+
+  surface_width = param.mfx.FrameInfo.Width;
+  surface_height = param.mfx.FrameInfo.Height;
+  if (surface_width < width || surface_height < height) {
+    last_error = "运行库返回的对齐尺寸小于请求尺寸";
+    return false;
+  }
+  return true;
+}
+
+bool VplJpegEncoder::encode(const uint8_t *nv12, size_t nv12_bytes,
+                            std::vector<uint8_t> &jpeg) {
+  jpeg.clear();
+  if (vpl.session == nullptr) {
+    last_error = "编码器未初始化";
+    return false;
+  }
+  if (nv12 == nullptr) {
+    last_error = "NV12 输入为空";
+    return false;
+  }
+  const size_t chroma_h = (static_cast<size_t>(height) + 1) / 2;
+  const size_t need = static_cast<size_t>(width) * height +
+                      static_cast<size_t>(width) * chroma_h;
+  if (nv12_bytes < need) {
+    last_error = "NV12 输入长度不足";
+    return false;
+  }
+
+  mfxFrameSurface1 *surface = nullptr;
+  mfxStatus sts = vpl.dyn.MFXMemory_GetSurfaceForEncode(vpl.session, &surface);
+  if (sts != MFX_ERR_NONE || surface == nullptr) {
+    last_error = std::string("MFXMemory_GetSurfaceForEncode 失败：") +
+                 vpl_status_str(sts);
+    return false;
+  }
+
+  // 内部 surface 可能是对齐后的尺寸，按 pitch 逐行拷贝；padding 区填
+  // Y=0 / UV=128，保证编码器读到的不是未初始化内存。
+  const mfxU16 pitch = surface->Data.Pitch;
+  const mfxU32 surface_rows = surface->Info.Height;
+  if (surface->Data.Y == nullptr || surface->Data.UV == nullptr ||
+      pitch < width || surface_rows < height) {
+    last_error = "运行库返回的系统内存 surface 尺寸不足";
+    if (surface->FrameInterface != nullptr) {
+      surface->FrameInterface->Release(surface);
     }
+    return false;
+  }
+  for (mfxU32 row = 0; row < surface_rows; ++row) {
+    const uint32_t src_row = row < height ? row : height - 1;
+    std::memset(surface->Data.Y + static_cast<size_t>(row) * pitch, 0, pitch);
+    std::memcpy(surface->Data.Y + static_cast<size_t>(row) * pitch,
+                nv12 + static_cast<size_t>(src_row) * width, width);
+  }
+  const uint8_t *src_uv = nv12 + static_cast<size_t>(width) * height;
+  const mfxU32 surface_chroma_rows = (surface_rows + 1) / 2;
+  for (mfxU32 row = 0; row < surface_chroma_rows; ++row) {
+    const uint32_t src_row =
+        row < chroma_h ? row : static_cast<uint32_t>(chroma_h - 1);
+    std::memset(surface->Data.UV + static_cast<size_t>(row) * pitch, 128,
+                pitch);
+    std::memcpy(surface->Data.UV + static_cast<size_t>(row) * pitch,
+                src_uv + static_cast<size_t>(src_row) * width, width);
+  }
 
-    mfxConfig cfg = dyn.MFXCreateConfig(loader);
-    if (cfg) {
-        mfxVariant v{};
-        v.Type = MFX_VARIANT_TYPE_U32;
-        v.Data.U32 = MFX_IMPL_TYPE_HARDWARE;
-        dyn.MFXSetConfigFilterProperty(cfg, (const mfxU8*)"mfxImplDescription.Impl", v);
-    }
+  const bool ok = encode_surface(surface, jpeg);
+  if (surface->FrameInterface != nullptr) {
+    surface->FrameInterface->Release(surface);
+  }
+  return ok;
+}
 
-    int chosen = -1;
-    for (mfxU32 i = 0;; i++) {
-        mfxHDL hdl = nullptr;
-        if (dyn.MFXEnumImplementations(loader, i, MFX_IMPLCAPS_IMPLDESCSTRUCTURE, &hdl) != MFX_ERR_NONE)
-            break;
-        auto* d = (mfxImplDescription*)hdl;
-        if (d->VendorID == 0x8086) {
-            chosen = (int)i;
-            impl_name = d->ImplName;
+bool VplJpegEncoder::encode_surface(mfxFrameSurface1 *surface,
+                                    std::vector<uint8_t> &jpeg) {
+  std::vector<uint8_t> buffer(kInitialBitstreamBytes);
+  mfxBitstream bitstream{};
+  bitstream.MaxLength = static_cast<mfxU32>(buffer.size());
+  bitstream.Data = buffer.data();
+
+  // 单帧编码：EncodeFrameAsync 可能返回 NOT_ENOUGH_BUFFER（扩缓冲重试）、
+  // MORE_DATA（等下一帧，单帧场景忽略）或 NONE（同步点已给出）。
+  bool produced = false;
+  for (int attempt = 0; attempt < 16 && !produced; ++attempt) {
+    bitstream.DataOffset = 0;
+    bitstream.DataLength = 0;
+    mfxSyncPoint sync = nullptr;
+    const mfxStatus sts = vpl.dyn.MFXVideoENCODE_EncodeFrameAsync(
+        vpl.session, nullptr, surface, &bitstream, &sync);
+    if (sts == MFX_ERR_NONE) {
+      if (sync != nullptr) {
+        const mfxStatus sync_sts = vpl.dyn.MFXVideoCORE_SyncOperation(
+            vpl.session, sync, kSyncTimeoutMs);
+        if (sync_sts != MFX_ERR_NONE) {
+          last_error = std::string("MFXVideoCORE_SyncOperation 失败：") +
+                       vpl_status_str(sync_sts);
+          return false;
         }
+      }
+      jpeg.insert(jpeg.end(), bitstream.Data + bitstream.DataOffset,
+                  bitstream.Data + bitstream.DataOffset + bitstream.DataLength);
+      produced = true;
+      break;
     }
-    if (chosen < 0) {
-        std::fprintf(stderr, "[vpl] encoder: 未找到 Intel 硬件实现\n");
-        dyn.MFXUnload(loader);
-        loader = nullptr;
-        dyn.unload();
-        return false;
+    if (sts == MFX_ERR_MORE_DATA) {
+      continue;
     }
-    if (dyn.MFXCreateSession(loader, chosen, &session) != MFX_ERR_NONE) {
-        std::fprintf(stderr, "[vpl] encoder: MFXCreateSession 失败\n");
-        dyn.MFXUnload(loader);
-        loader = nullptr;
-        dyn.unload();
-        return false;
+    if (sts == MFX_ERR_NOT_ENOUGH_BUFFER) {
+      buffer.resize(buffer.size() * 2);
+      bitstream.MaxLength = static_cast<mfxU32>(buffer.size());
+      bitstream.Data = buffer.data();
+      continue;
     }
+    last_error = std::string("MFXVideoENCODE_EncodeFrameAsync 失败：") +
+                 vpl_status_str(sts);
+    return false;
+  }
+  if (!produced || jpeg.empty()) {
+    if (last_error.empty()) {
+      last_error = "硬件编码器没有输出码流";
+    }
+    return false;
+  }
 
-    std::memset(&param, 0, sizeof(param));
-    param.mfx.CodecId                       = MFX_CODEC_JPEG;
-    param.mfx.CodecProfile                  = MFX_PROFILE_JPEG_BASELINE;
-    param.mfx.LowPower                      = 0;
-    param.mfx.FrameInfo.FourCC              = MFX_FOURCC_NV12;
-    param.mfx.FrameInfo.ChromaFormat        = MFX_CHROMAFORMAT_YUV420;
-    param.mfx.FrameInfo.Width               = (mfxU16)w;
-    param.mfx.FrameInfo.Height              = (mfxU16)h;
-    param.mfx.FrameInfo.CropW               = (mfxU16)w;
-    param.mfx.FrameInfo.CropH               = (mfxU16)h;
-    param.mfx.FrameInfo.PicStruct           = MFX_PICSTRUCT_PROGRESSIVE;
-    param.mfx.FrameInfo.FrameRateExtN       = 30;
-    param.mfx.FrameInfo.FrameRateExtD       = 1;
-    param.mfx.FrameInfo.BitDepthLuma        = 8;
-    param.mfx.FrameInfo.BitDepthChroma      = 8;
-    param.mfx.Quality                       = (mfxU16)(quality > 100 ? 100 : quality);
-    param.mfx.Interleaved                   = 1;
-    param.IOPattern = MFX_IOPATTERN_IN_SYSTEM_MEMORY | MFX_IOPATTERN_OUT_SYSTEM_MEMORY;
-
-    mfxStatus sts = dyn.MFXVideoENCODE_Query(session, &param, &param);
-    if (sts != MFX_ERR_NONE && sts != MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
-        std::fprintf(stderr, "[vpl] encoder: Query 失败 %s(%d)\n",
-                     vpl_status_str(sts), (int)sts);
-        close();
-        return false;
+  // 冲刷：单帧编码器通常在这里就不再输出，但延迟输出是合法的。
+  for (int attempt = 0; attempt < 8; ++attempt) {
+    bitstream.DataOffset = 0;
+    bitstream.DataLength = 0;
+    mfxSyncPoint sync = nullptr;
+    const mfxStatus sts = vpl.dyn.MFXVideoENCODE_EncodeFrameAsync(
+        vpl.session, nullptr, nullptr, &bitstream, &sync);
+    if (sts == MFX_ERR_MORE_DATA) {
+      break;
     }
-    dyn.MFXVideoENCODE_QueryIOSurf(session, &param, nullptr);
-    sts = dyn.MFXVideoENCODE_Init(session, &param);
-    if (sts != MFX_ERR_NONE && sts != MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
-        std::fprintf(stderr, "[vpl] encoder: Init 失败 %s(%d)\n",
-                     vpl_status_str(sts), (int)sts);
-        close();
-        return false;
+    if (sts == MFX_ERR_NOT_ENOUGH_BUFFER) {
+      buffer.resize(buffer.size() * 2);
+      bitstream.MaxLength = static_cast<mfxU32>(buffer.size());
+      bitstream.Data = buffer.data();
+      continue;
     }
-
-    // 表面指向调用方传入的 NV12 缓冲（Y + 交错 UV），pitch = width。
-    surface.Info = param.mfx.FrameInfo;
-    surface.Data.Pitch = (mfxU16)w;
-    return true;
+    if (sts != MFX_ERR_NONE) {
+      break;
+    }
+    if (sync != nullptr) {
+      vpl.dyn.MFXVideoCORE_SyncOperation(vpl.session, sync, kSyncTimeoutMs);
+    }
+    jpeg.insert(jpeg.end(), bitstream.Data + bitstream.DataOffset,
+                bitstream.Data + bitstream.DataOffset + bitstream.DataLength);
+  }
+  return !jpeg.empty();
 }
 
-bool VplJpegEncoder::encode(const uint8_t* nv12, size_t nv12_bytes, std::vector<uint8_t>& jpeg)
-{
-    jpeg.clear();
-    if (!session || !nv12)
-        return false;
-    const size_t need = (size_t)width * height * 3 / 2;
-    if (nv12_bytes < need)
-        return false;
-
-    surface.Data.Y  = (mfxU8*)nv12;
-    surface.Data.UV = (mfxU8*)nv12 + (size_t)width * height;
-    surface.Data.Pitch = (mfxU16)width;
-
-    size_t cap = need + (64u * 1024);            // 初值：帧大小 + 64KiB
-    std::vector<uint8_t> bs(cap);
-    mfxBitstream bst{};
-    bst.MaxLength = (mfxU32)cap;
-    bst.Data = bs.data();
-
-    mfxEncodeCtrl ctrl{};
-    ctrl.FrameType = MFX_FRAMETYPE_I;            // 单帧 I 帧
-    mfxSyncPoint syncp = nullptr;
-    mfxStatus sts = MFX_ERR_NONE;
-
-    for (int attempt = 0; attempt < 8; attempt++) {
-        syncp = nullptr;
-        bst.DataOffset = 0;
-        bst.DataLength = 0;
-        sts = dyn.MFXVideoENCODE_EncodeFrameAsync(session, &ctrl, &surface, &bst, &syncp);
-        if (sts == MFX_ERR_NONE) {
-            if (syncp)
-                dyn.MFXVideoCORE_SyncOperation(session, syncp, 60000);
-            jpeg.assign(bst.Data + bst.DataOffset, bst.Data + bst.DataOffset + bst.DataLength);
-            break;
-        } else if (sts == MFX_ERR_NOT_ENOUGH_BUFFER) {
-            cap *= 2;
-            bs.resize(cap);
-            bst.MaxLength = (mfxU32)cap;
-            bst.Data = bs.data();
-            bst.DataOffset = 0;
-            bst.DataLength = 0;
-            continue;
-        } else if (sts == MFX_ERR_MORE_DATA) {
-            break;                                 // 无输出
-        } else {
-            std::fprintf(stderr, "[vpl] encoder: EncodeFrameAsync 失败 %s(%d)\n",
-                         vpl_status_str(sts), (int)sts);
-            return false;
-        }
-    }
-
-    // Drain flush。
-    for (int attempt = 0; attempt < 8; attempt++) {
-        syncp = nullptr;
-        bst.DataOffset = 0;
-        bst.DataLength = 0;
-        sts = dyn.MFXVideoENCODE_EncodeFrameAsync(session, nullptr, nullptr, &bst, &syncp);
-        if (sts == MFX_ERR_MORE_DATA)
-            break;
-        if (sts == MFX_ERR_NONE || sts == MFX_ERR_NOT_ENOUGH_BUFFER) {
-            if (syncp)
-                dyn.MFXVideoCORE_SyncOperation(session, syncp, 60000);
-            jpeg.insert(jpeg.end(),
-                        bst.Data + bst.DataOffset, bst.Data + bst.DataOffset + bst.DataLength);
-            if (sts == MFX_ERR_NOT_ENOUGH_BUFFER) {
-                cap *= 2;
-                bs.resize(cap);
-                bst.MaxLength = (mfxU32)cap;
-                bst.Data = bs.data();
-                continue;
-            }
-        } else {
-            break;
-        }
-    }
-    return !jpeg.empty();
+bool VplJpegEncoder::encode_rgb24(const uint8_t *rgb, size_t rgb_bytes,
+                                  std::vector<uint8_t> &jpeg) {
+  const size_t need = static_cast<size_t>(width) * height * 3;
+  if (rgb == nullptr || rgb_bytes < need) {
+    last_error = "RGB24 输入长度不足";
+    return false;
+  }
+  const size_t chroma_bytes = static_cast<size_t>(width) * ((height + 1) / 2);
+  std::vector<uint8_t> nv12(static_cast<size_t>(width) * height + chroma_bytes,
+                            128);
+  rgb24_to_nv12(rgb, nv12.data(), width, height);
+  return encode(nv12.data(), nv12.size(), jpeg);
 }
 
-bool VplJpegEncoder::encode_rgb24(const uint8_t* rgb, size_t rgb_bytes, std::vector<uint8_t>& jpeg)
-{
-    const size_t need = (size_t)width * height * 3;
-    if (!rgb || rgb_bytes < need)
-        return false;
-    std::vector<uint8_t> nv12((size_t)width * height * 3 / 2);
-    rgb24_to_nv12(rgb, nv12.data(), width, height);
-    return encode(nv12.data(), nv12.size(), jpeg);
+bool VplJpegEncoder::encode_bgr24(const uint8_t *bgr, size_t bgr_bytes,
+                                  std::vector<uint8_t> &jpeg) {
+  const size_t need = static_cast<size_t>(width) * height * 3;
+  if (bgr == nullptr || bgr_bytes < need) {
+    last_error = "BGR24 输入长度不足";
+    return false;
+  }
+  const size_t chroma_bytes = static_cast<size_t>(width) * ((height + 1) / 2);
+  std::vector<uint8_t> nv12(static_cast<size_t>(width) * height + chroma_bytes,
+                            128);
+  bgr24_to_nv12(bgr, nv12.data(), width, height);
+  return encode(nv12.data(), nv12.size(), jpeg);
 }
 
-bool VplJpegEncoder::encode_bgr24(const uint8_t* bgr, size_t bgr_bytes, std::vector<uint8_t>& jpeg)
-{
-    const size_t need = (size_t)width * height * 3;
-    if (!bgr || bgr_bytes < need)
-        return false;
-    std::vector<uint8_t> nv12((size_t)width * height * 3 / 2);
-    bgr24_to_nv12(bgr, nv12.data(), width, height);
-    return encode(nv12.data(), nv12.size(), jpeg);
+void VplJpegEncoder::close() {
+  if (vpl.session != nullptr) {
+    vpl.dyn.MFXVideoENCODE_Close(vpl.session);
+  }
+  vpl.close();
+  surface_width = 0;
+  surface_height = 0;
 }
 
-void VplJpegEncoder::close()
-{
-    if (session) {
-        dyn.MFXVideoENCODE_Close(session);
-        dyn.MFXClose(session);
-        session = nullptr;
-    }
-    if (loader) {
-        dyn.MFXUnload(loader);
-        loader = nullptr;
-    }
-    dyn.unload();
-}
-
-}  // namespace onevpl
-}  // namespace jpeg
-}  // namespace oic
+} // namespace onevpl
+} // namespace jpeg
+} // namespace oic

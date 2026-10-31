@@ -1,3 +1,4 @@
+// win_platform.cpp - Windows 平台抽象实现（可执行目录 / 单调时钟 / 休眠）。
 #include "oic_platform.h"
 
 #if defined(_WIN32)
@@ -31,31 +32,11 @@ long long oic_now_ns(void) {
     return 0;
   }
   QueryPerformanceCounter(&counter);
-  return static_cast<long long>(
-      (static_cast<double>(counter.QuadPart) / static_cast<double>(freq.QuadPart)) *
-      1e9);
+  return static_cast<long long>((static_cast<double>(counter.QuadPart) /
+                                 static_cast<double>(freq.QuadPart)) *
+                                1e9);
 }
 
 void oic_sleep_ms(unsigned ms) { Sleep(ms); }
 
-#else
-// POSIX 预留实现（阶段0 仅 Windows 主路径；Linux/macOS 后续补充）。
-#include <cstdlib>
-#include <chrono>
-#include <ctime>
-#include <thread>
-
-char *oic_exe_dir(void) { return nullptr; }
-
-long long oic_now_ns(void) {
-  struct timespec ts;
-  if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
-    return 0;
-  }
-  return static_cast<long long>(ts.tv_sec) * 1000000000LL + ts.tv_nsec;
-}
-
-void oic_sleep_ms(unsigned ms) {
-  std::this_thread::sleep_for(std::chrono::milliseconds(ms));
-}
-#endif
+#endif // _WIN32

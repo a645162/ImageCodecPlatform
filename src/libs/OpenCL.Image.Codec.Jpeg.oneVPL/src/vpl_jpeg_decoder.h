@@ -1,59 +1,52 @@
-// vpl_jpeg_decoder.h - oneVPL (libvpl.dll) 硬件 JPEG 解码器。
+// vpl_jpeg_decoder.h - oneVPL 硬件 JPEG 解码器（系统内存 NV12 输出）。
 //
-// JPEG -> 硬件解码(D3D11) -> NV12 系统内存 -> BGRA32。
-// 基于 oneVPL loader API 动态加载，无导入库。
+// 与旧实现的区别：不再创建 D3D11 设备，也不自带帧分配器。解码输出走
+// MFX_IOPATTERN_OUT_SYSTEM_MEMORY + 运行库内部 surface（DecodeFrameAsync 传
+// nullptr 工作表面），由解码器自己分配；取到 surface 后按 pitch 拷出 NV12，
+// 再转成 BGR24 / BGRA32。Linux（VA-API）与 Windows 共用这条路径。
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
 
-#include "vpl_dyn.h"
+#include "vpl_device.h"
 
 namespace oic {
 namespace jpeg {
 namespace onevpl {
 
-// 系统内存 NV12 帧分配器：硬件解码器的输出纹理经 Lock 拷贝到 CPU 内存。
-// 此处实现为纯系统内存分配（Alloc 直接给 NV12 缓冲），满足
-// MFX_IOPATTERN_OUT_SYSTEM_MEMORY + D3D11 设备句柄的组合路径。
-struct SimpleAllocator {
-    mfxFrameAllocator alloc{};
-    void* device = nullptr;          // ID3D11Device*（仅持有，不用于系统内存路径）
-    uint32_t w = 0, h = 0;
-    std::vector<std::vector<uint8_t>> bufs;   // NV12 系统内存缓冲
-    std::vector<mfxMemId> mids;               // 持续存在的 mid 数组
-
-    static mfxStatus MFX_CDECL alloc_cb(mfxHDL pthis, mfxFrameAllocRequest* req, mfxFrameAllocResponse* resp);
-    static mfxStatus MFX_CDECL lock_cb(mfxHDL pthis, mfxMemId mid, mfxFrameData* ptr);
-    static mfxStatus MFX_CDECL unlock_cb(mfxHDL pthis, mfxMemId mid, mfxFrameData* ptr);
-    static mfxStatus MFX_CDECL getHDL_cb(mfxHDL pthis, mfxMemId mid, mfxHDL* handle);
-    static mfxStatus MFX_CDECL free_cb(mfxHDL pthis, mfxFrameAllocResponse* resp);
-
-    SimpleAllocator(void* d3d11_device);
-};
-
-// oneVPL 硬件 JPEG 解码器：整图 -> GPU -> NV12 系统内存 -> BGRA32。
 struct VplJpegDecoder {
-    VplDyn dyn;                       // 动态绑定的 libvpl.dll 入口
-    mfxLoader loader = nullptr;
-    mfxSession session = nullptr;
-    mfxVideoParam param{};
-    SimpleAllocator allocator{nullptr};
-    void* d3d11 = nullptr;            // ID3D11Device*，保持存活
-    std::string impl_name;
+  VplSession vpl;
+  mfxVideoParam param{};
+  std::string impl_name;
+  std::string last_error;
 
-    // 建立会话 + D3D11 设备。失败返回 false（不崩溃）。
-    bool init();
+  VplJpegDecoder() = default;
+  VplJpegDecoder(const VplJpegDecoder &) = delete;
+  VplJpegDecoder &operator=(const VplJpegDecoder &) = delete;
+  ~VplJpegDecoder() { close(); }
 
-    // 解码一帧 JPEG -> BGRA32（bgra 需 w*h*4 字节）。成功返回 true。
-    bool decode(const uint8_t* jpeg, size_t size,
-                std::vector<uint8_t>& bgra, uint32_t& w, uint32_t& h);
+  // 建立会话（按住所选 Intel 硬件单元）。失败返回 false 并写 last_error。
+  bool init();
+  bool init_on_unit(const VplUnitInfo &unit);
+  // 探测并建立会话，把探测结果留在 last_probe 便于上层打印原因。
+  bool init_with_probe();
 
-    // 释放会话、D3D11 设备与动态库。
-    void close();
+  // 解码一帧 JPEG -> BGRA32（w*h*4，alpha=255）。成功时写回 w/h。
+  bool decode(const uint8_t *jpeg, size_t size, std::vector<uint8_t> &bgra,
+              uint32_t &w, uint32_t &h);
+  // 解码一帧 JPEG -> BGR24（w*h*3）。
+  bool decode_bgr24(const uint8_t *jpeg, size_t size, std::vector<uint8_t> &bgr,
+                    uint32_t &w, uint32_t &h);
+  // 解码一帧 JPEG -> NV12（w*h*3/2，pitch=width）。供需要原始 YUV 的调用方。
+  bool decode_nv12(const uint8_t *jpeg, size_t size, std::vector<uint8_t> &nv12,
+                   uint32_t &w, uint32_t &h);
+
+  void close();
 };
 
-}  // namespace onevpl
-}  // namespace jpeg
-}  // namespace oic
+} // namespace onevpl
+} // namespace jpeg
+} // namespace oic
